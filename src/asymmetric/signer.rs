@@ -10,7 +10,9 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use huskarl_core::crypto::signer::{HasPublicKey, JwsSigningKey, SigningKeyMetadata};
+use huskarl_core::crypto::signer::{
+    AsymmetricJwsSigningKey, AsymmetricSigningKeyMetadata, SigningKeyMetadata,
+};
 use huskarl_core::jwk;
 use huskarl_core::secrets::Secret;
 
@@ -33,8 +35,7 @@ pub enum KeyLoadError<E: huskarl_core::Error> {
 #[derive(Debug)]
 struct PrivateKeyInner {
     signing_key: Key,
-    key_metadata: SigningKeyMetadata,
-    jwk: jwk::PublicJwk,
+    key_metadata: AsymmetricSigningKeyMetadata,
 }
 
 /// An asymmetric private key.
@@ -364,11 +365,13 @@ impl PrivateKey {
         Self {
             inner: Arc::new(PrivateKeyInner {
                 signing_key,
-                key_metadata: SigningKeyMetadata {
-                    jws_algorithm,
-                    key_id: None,
+                key_metadata: AsymmetricSigningKeyMetadata {
+                    key_metadata: SigningKeyMetadata {
+                        jws_algorithm,
+                        key_id: None,
+                    },
+                    public_key: jwk,
                 },
-                jwk,
             }),
         }
     }
@@ -388,21 +391,23 @@ impl PrivateKey {
         key_id_from_secret_identity: F,
     ) -> Result<Self, KeyLoadError<S::Error>> {
         fn build(
-            key_id: Option<String>,
+            key_id: Option<&str>,
             f: impl Fn() -> Result<Key, pkcs8::Error>,
         ) -> Result<PrivateKey, pkcs8::Error> {
             let signing_key = f()?;
             let jws_algorithm = signing_key.jws_algorithm().to_string();
-            let jwk = signing_key.as_public_jwk(key_id.as_deref());
+            let jwk = signing_key.as_public_jwk(key_id);
 
             Ok(PrivateKey {
                 inner: Arc::new(PrivateKeyInner {
                     signing_key,
-                    key_metadata: SigningKeyMetadata {
-                        jws_algorithm,
-                        key_id,
+                    key_metadata: AsymmetricSigningKeyMetadata {
+                        key_metadata: SigningKeyMetadata {
+                            jws_algorithm,
+                            key_id: None,
+                        },
+                        public_key: jwk,
                     },
-                    jwk,
                 }),
             })
         }
@@ -412,37 +417,37 @@ impl PrivateKey {
         let key_id = key_id_from_secret_identity(secret_output.identity.as_deref());
 
         match key_type {
-            AsymmetricAlgorithm::Es256 => build(key_id, || {
+            AsymmetricAlgorithm::Es256 => build(key_id.as_deref(), || {
                 p256::ecdsa::SigningKey::from_pkcs8_der(bytes).map(Key::Es256)
             }),
-            AsymmetricAlgorithm::Es384 => build(key_id, || {
+            AsymmetricAlgorithm::Es384 => build(key_id.as_deref(), || {
                 p384::ecdsa::SigningKey::from_pkcs8_der(bytes).map(Key::Es384)
             }),
-            AsymmetricAlgorithm::Rs256 => build(key_id, || {
+            AsymmetricAlgorithm::Rs256 => build(key_id.as_deref(), || {
                 rsa::pkcs1v15::SigningKey::from_pkcs8_der(bytes).map(Key::Rs256)
             }),
-            AsymmetricAlgorithm::Rs384 => build(key_id, || {
+            AsymmetricAlgorithm::Rs384 => build(key_id.as_deref(), || {
                 rsa::pkcs1v15::SigningKey::from_pkcs8_der(bytes).map(Key::Rs384)
             }),
-            AsymmetricAlgorithm::Rs512 => build(key_id, || {
+            AsymmetricAlgorithm::Rs512 => build(key_id.as_deref(), || {
                 rsa::pkcs1v15::SigningKey::from_pkcs8_der(bytes).map(Key::Rs512)
             }),
-            AsymmetricAlgorithm::Ps256 => build(key_id, || {
+            AsymmetricAlgorithm::Ps256 => build(key_id.as_deref(), || {
                 rsa::pss::SigningKey::from_pkcs8_der(bytes).map(Key::Ps256)
             }),
-            AsymmetricAlgorithm::Ps384 => build(key_id, || {
+            AsymmetricAlgorithm::Ps384 => build(key_id.as_deref(), || {
                 rsa::pss::SigningKey::from_pkcs8_der(bytes).map(Key::Ps384)
             }),
-            AsymmetricAlgorithm::Ps512 => build(key_id, || {
+            AsymmetricAlgorithm::Ps512 => build(key_id.as_deref(), || {
                 rsa::pss::SigningKey::from_pkcs8_der(bytes).map(Key::Ps512)
             }),
-            AsymmetricAlgorithm::EdDsa => build(key_id, || {
+            AsymmetricAlgorithm::EdDsa => build(key_id.as_deref(), || {
                 ed25519_dalek::SigningKey::from_pkcs8_der(bytes).map(|key| Key::Ed25519 {
                     key,
                     use_fully_specified_jws_algorithm: false,
                 })
             }),
-            AsymmetricAlgorithm::Ed25519 => build(key_id, || {
+            AsymmetricAlgorithm::Ed25519 => build(key_id.as_deref(), || {
                 ed25519_dalek::SigningKey::from_pkcs8_der(bytes).map(|key| Key::Ed25519 {
                     key,
                     use_fully_specified_jws_algorithm: true,
@@ -467,21 +472,23 @@ impl PrivateKey {
         key_id_from_secret_identity: F,
     ) -> Result<Self, KeyLoadError<S::Error>> {
         fn build(
-            key_id: Option<String>,
+            key_id: Option<&str>,
             f: impl Fn() -> Result<Key, pkcs8::Error>,
         ) -> Result<PrivateKey, pkcs8::Error> {
             let signing_key = f()?;
             let jws_algorithm = signing_key.jws_algorithm().to_string();
-            let jwk = signing_key.as_public_jwk(key_id.as_deref());
+            let jwk = signing_key.as_public_jwk(key_id);
 
             Ok(PrivateKey {
                 inner: Arc::new(PrivateKeyInner {
                     signing_key,
-                    key_metadata: SigningKeyMetadata {
-                        jws_algorithm,
-                        key_id,
+                    key_metadata: AsymmetricSigningKeyMetadata {
+                        key_metadata: SigningKeyMetadata {
+                            jws_algorithm,
+                            key_id: None,
+                        },
+                        public_key: jwk,
                     },
-                    jwk,
                 }),
             })
         }
@@ -491,37 +498,37 @@ impl PrivateKey {
         let key_id = key_id_from_secret_identity(secret_output.identity.as_deref());
 
         match key_type {
-            AsymmetricAlgorithm::Es256 => build(key_id, || {
+            AsymmetricAlgorithm::Es256 => build(key_id.as_deref(), || {
                 p256::ecdsa::SigningKey::from_pkcs8_pem(bytes).map(Key::Es256)
             }),
-            AsymmetricAlgorithm::Es384 => build(key_id, || {
+            AsymmetricAlgorithm::Es384 => build(key_id.as_deref(), || {
                 p384::ecdsa::SigningKey::from_pkcs8_pem(bytes).map(Key::Es384)
             }),
-            AsymmetricAlgorithm::Rs256 => build(key_id, || {
+            AsymmetricAlgorithm::Rs256 => build(key_id.as_deref(), || {
                 rsa::pkcs1v15::SigningKey::from_pkcs8_pem(bytes).map(Key::Rs256)
             }),
-            AsymmetricAlgorithm::Rs384 => build(key_id, || {
+            AsymmetricAlgorithm::Rs384 => build(key_id.as_deref(), || {
                 rsa::pkcs1v15::SigningKey::from_pkcs8_pem(bytes).map(Key::Rs384)
             }),
-            AsymmetricAlgorithm::Rs512 => build(key_id, || {
+            AsymmetricAlgorithm::Rs512 => build(key_id.as_deref(), || {
                 rsa::pkcs1v15::SigningKey::from_pkcs8_pem(bytes).map(Key::Rs512)
             }),
-            AsymmetricAlgorithm::Ps256 => build(key_id, || {
+            AsymmetricAlgorithm::Ps256 => build(key_id.as_deref(), || {
                 rsa::pss::SigningKey::from_pkcs8_pem(bytes).map(Key::Ps256)
             }),
-            AsymmetricAlgorithm::Ps384 => build(key_id, || {
+            AsymmetricAlgorithm::Ps384 => build(key_id.as_deref(), || {
                 rsa::pss::SigningKey::from_pkcs8_pem(bytes).map(Key::Ps384)
             }),
-            AsymmetricAlgorithm::Ps512 => build(key_id, || {
+            AsymmetricAlgorithm::Ps512 => build(key_id.as_deref(), || {
                 rsa::pss::SigningKey::from_pkcs8_pem(bytes).map(Key::Ps512)
             }),
-            AsymmetricAlgorithm::EdDsa => build(key_id, || {
+            AsymmetricAlgorithm::EdDsa => build(key_id.as_deref(), || {
                 ed25519_dalek::SigningKey::from_pkcs8_pem(bytes).map(|key| Key::Ed25519 {
                     key,
                     use_fully_specified_jws_algorithm: false,
                 })
             }),
-            AsymmetricAlgorithm::Ed25519 => build(key_id, || {
+            AsymmetricAlgorithm::Ed25519 => build(key_id.as_deref(), || {
                 ed25519_dalek::SigningKey::from_pkcs8_pem(bytes).map(|key| Key::Ed25519 {
                     key,
                     use_fully_specified_jws_algorithm: true,
@@ -532,14 +539,16 @@ impl PrivateKey {
     }
 }
 
-impl JwsSigningKey for PrivateKey {
+impl AsymmetricJwsSigningKey for PrivateKey {
     type Error = Infallible;
 
-    fn key_metadata(&self) -> Cow<'_, SigningKeyMetadata> {
+    fn asymmetric_key_metadata(
+        &self,
+    ) -> Cow<'_, huskarl_core::crypto::signer::AsymmetricSigningKeyMetadata> {
         Cow::Borrowed(&self.inner.key_metadata)
     }
 
-    async fn sign_unchecked(&self, input: &[u8]) -> Result<Vec<u8>, Self::Error> {
+    async fn sign_asymmetric_unchecked(&self, input: &[u8]) -> Result<Vec<u8>, Self::Error> {
         match &self.inner.signing_key {
             Key::Es256(signing_key) => {
                 let signature: p256::ecdsa::Signature = signing_key.sign(input);
@@ -566,11 +575,5 @@ impl JwsSigningKey for PrivateKey {
             }
             Key::Ed25519 { key, .. } => Ok(key.sign(input).to_vec()),
         }
-    }
-}
-
-impl HasPublicKey for PrivateKey {
-    fn public_key_jwk(&self) -> &jwk::PublicJwk {
-        &self.inner.jwk
     }
 }

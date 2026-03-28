@@ -306,7 +306,7 @@ mod tests {
         verifier::AsymmetricPublicKey,
     };
     use huskarl_core::{
-        crypto::{signer::HasPublicKey as _, verifier::BoxedJwsVerifier},
+        crypto::{signer::AsymmetricJwsSigningKey, verifier::BoxedJwsVerifier},
         jwt::Jwt,
         token::validator::{ClaimCheck, JwtValidator},
     };
@@ -332,7 +332,8 @@ mod tests {
         let token = jwt.to_jws_compact(&signing_key).await.unwrap();
 
         let public_key =
-            AsymmetricPublicKey::from_jwk(signing_key.public_key_jwk().clone()).unwrap();
+            AsymmetricPublicKey::from_jwk(signing_key.asymmetric_key_metadata().public_key.clone())
+                .unwrap();
 
         let validator = JwtValidator::builder()
             .verifier(BoxedJwsVerifier::new(public_key))

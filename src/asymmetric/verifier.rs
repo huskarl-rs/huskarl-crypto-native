@@ -306,7 +306,10 @@ mod tests {
         verifier::AsymmetricPublicKey,
     };
     use huskarl_core::{
-        crypto::{signer::AsymmetricJwsSigningKey, verifier::BoxedJwsVerifier},
+        crypto::{
+            signer::{AsymmetricJwsSigner, AsymmetricJwsSignerSelector},
+            verifier::BoxedJwsVerifier,
+        },
         jwt::Jwt,
         token::validator::{ClaimCheck, JwtValidator},
     };
@@ -320,8 +323,9 @@ mod tests {
         }
 
         let signing_key = PrivateKey::generate(GenerateAlgorithm::EdDsa);
+        let selected_key = signing_key.select_asymmetric_signer();
 
-        let jwt = Jwt::<(), _>::builder()
+        let jwt = Jwt::builder()
             .issuer("https://as.example.com")
             .audience("my-api")
             .issued_now_expires_after(std::time::Duration::from_secs(300))
@@ -329,11 +333,10 @@ mod tests {
                 earnest_id: "abc123".to_string(),
             })
             .build();
-        let token = jwt.to_jws_compact(&signing_key).await.unwrap();
+        let token = jwt.to_jws_compact(&selected_key).await.unwrap();
 
         let public_key =
-            AsymmetricPublicKey::from_jwk(signing_key.asymmetric_key_metadata().public_key.clone())
-                .unwrap();
+            AsymmetricPublicKey::from_jwk(selected_key.public_key_jwk().into_owned()).unwrap();
 
         let validator = JwtValidator::builder()
             .verifier(BoxedJwsVerifier::new(public_key))

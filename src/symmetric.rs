@@ -7,7 +7,7 @@ use secrecy::{ExposeSecret, SecretBox};
 
 use huskarl_core::{
     crypto::{
-        signer::{JwsSigningKey, SigningKeyMetadata},
+        signer::{JwsSigner, JwsSignerSelector},
         verifier::{JwsVerifier, KeyMatch, KeyMatchStrength, VerifyError},
     },
     secrets::Secret,
@@ -41,7 +41,7 @@ impl AsRef<str> for SymmetricAlgorithm {
 struct SymmetricKeyInner {
     key: SecretBox<[u8]>,
     algorithm: SymmetricAlgorithm,
-    metadata: SigningKeyMetadata,
+    key_id: Option<String>,
 }
 
 /// An HMAC symmetric key.
@@ -82,6 +82,7 @@ impl SymmetricKey {
         key_id_from_secret_identity: F,
     ) -> Result<Self, KeyLoadError<S::Error>> {
         let secret_output = secret.get_secret_value().await.context(SecretSnafu)?;
+        let key_id = key_id_from_secret_identity(secret_output.identity.as_deref());
         let mut key = secret_output.value;
 
         let required_key_size = match algorithm {
@@ -120,33 +121,36 @@ impl SymmetricKey {
             }
         );
 
-        let metadata = SigningKeyMetadata::builder()
-            .jws_algorithm(algorithm.as_ref())
-            .maybe_key_id(key_id_from_secret_identity(
-                secret_output.identity.as_deref(),
-            ))
-            .build();
-
         Ok(Self {
             inner: Arc::new(SymmetricKeyInner {
                 key,
                 algorithm,
-                metadata,
+                key_id,
             }),
         })
     }
 }
 
-impl JwsSigningKey for SymmetricKey {
+impl JwsSignerSelector for SymmetricKey {
+    type Signer = Self;
+
+    fn select_signer(&self) -> Self::Signer {
+        self.clone()
+    }
+}
+
+impl JwsSigner for SymmetricKey {
     type Error = Infallible;
 
-    fn key_metadata(
-        &self,
-    ) -> std::borrow::Cow<'_, huskarl_core::crypto::signer::SigningKeyMetadata> {
-        Cow::Borrowed(&self.inner.metadata)
+    fn jws_algorithm(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.inner.algorithm.as_ref())
     }
 
-    async fn sign_unchecked(&self, input: &[u8]) -> Result<Vec<u8>, Self::Error> {
+    fn key_id(&self) -> Option<Cow<'_, str>> {
+        self.inner.key_id.as_deref().map(Cow::Borrowed)
+    }
+
+    async fn sign(&self, input: &[u8]) -> Result<Vec<u8>, Self::Error> {
         let key_bytes = self.inner.key.expose_secret();
 
         let signed_bytes = match self.inner.algorithm {
@@ -183,7 +187,7 @@ impl JwsVerifier for SymmetricKey {
         }
 
         if let Some(request_kid) = &key_match.kid {
-            match &self.inner.metadata.key_id {
+            match &self.inner.key_id {
                 Some(key_id) if key_id == request_kid => Some(KeyMatchStrength::ByKeyId),
                 Some(_) => None,
                 None => Some(KeyMatchStrength::ByAlgorithm),
@@ -204,7 +208,7 @@ impl JwsVerifier for SymmetricKey {
         }
 
         let hashed_input = self
-            .sign_unchecked(input)
+            .sign(input)
             .await
             .unwrap_or_else(|e: std::convert::Infallible| match e {});
 

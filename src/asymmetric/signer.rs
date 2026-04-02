@@ -10,9 +10,7 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use huskarl_core::crypto::signer::{
-    AsymmetricJwsSigningKey, AsymmetricSigningKeyMetadata, SigningKeyMetadata,
-};
+use huskarl_core::crypto::signer::{AsymmetricJwsSigner, AsymmetricJwsSignerSelector, JwsSigner};
 use huskarl_core::jwk;
 use huskarl_core::secrets::Secret;
 
@@ -35,7 +33,9 @@ pub enum KeyLoadError<E: huskarl_core::Error> {
 #[derive(Debug)]
 struct PrivateKeyInner {
     signing_key: Key,
-    key_metadata: AsymmetricSigningKeyMetadata,
+    jwk: jwk::PublicJwk,
+    thumbprint: String,
+    kid: Option<String>,
 }
 
 /// An asymmetric private key.
@@ -359,19 +359,17 @@ impl PrivateKey {
             }
         };
 
-        let jws_algorithm = signing_key.jws_algorithm().to_string();
         let jwk = signing_key.as_public_jwk(None);
+        let thumbprint = jwk
+            .thumbprint()
+            .expect("Thumbprint must exist for a supported key type");
 
         Self {
             inner: Arc::new(PrivateKeyInner {
                 signing_key,
-                key_metadata: AsymmetricSigningKeyMetadata {
-                    key_metadata: SigningKeyMetadata {
-                        jws_algorithm,
-                        key_id: None,
-                    },
-                    public_key: jwk,
-                },
+                jwk,
+                thumbprint,
+                kid: None,
             }),
         }
     }
@@ -395,19 +393,17 @@ impl PrivateKey {
             f: impl Fn() -> Result<Key, pkcs8::Error>,
         ) -> Result<PrivateKey, pkcs8::Error> {
             let signing_key = f()?;
-            let jws_algorithm = signing_key.jws_algorithm().to_string();
             let jwk = signing_key.as_public_jwk(key_id);
+            let thumbprint = jwk
+                .thumbprint()
+                .expect("Thumbprint must exist for a supported key type");
 
             Ok(PrivateKey {
                 inner: Arc::new(PrivateKeyInner {
                     signing_key,
-                    key_metadata: AsymmetricSigningKeyMetadata {
-                        key_metadata: SigningKeyMetadata {
-                            jws_algorithm,
-                            key_id: None,
-                        },
-                        public_key: jwk,
-                    },
+                    jwk,
+                    thumbprint,
+                    kid: key_id.map(|s| s.to_string()),
                 }),
             })
         }
@@ -476,19 +472,17 @@ impl PrivateKey {
             f: impl Fn() -> Result<Key, pkcs8::Error>,
         ) -> Result<PrivateKey, pkcs8::Error> {
             let signing_key = f()?;
-            let jws_algorithm = signing_key.jws_algorithm().to_string();
             let jwk = signing_key.as_public_jwk(key_id);
+            let thumbprint = jwk
+                .thumbprint()
+                .expect("Thumbprint must exist for a supported key type");
 
             Ok(PrivateKey {
                 inner: Arc::new(PrivateKeyInner {
                     signing_key,
-                    key_metadata: AsymmetricSigningKeyMetadata {
-                        key_metadata: SigningKeyMetadata {
-                            jws_algorithm,
-                            key_id: None,
-                        },
-                        public_key: jwk,
-                    },
+                    jwk,
+                    thumbprint,
+                    kid: key_id.map(|s| s.to_string()),
                 }),
             })
         }
@@ -539,16 +533,43 @@ impl PrivateKey {
     }
 }
 
-impl AsymmetricJwsSigningKey for PrivateKey {
-    type Error = Infallible;
+impl AsymmetricJwsSignerSelector for PrivateKey {
+    type AsymmetricSigner = Self;
 
-    fn asymmetric_key_metadata(
-        &self,
-    ) -> Cow<'_, huskarl_core::crypto::signer::AsymmetricSigningKeyMetadata> {
-        Cow::Borrowed(&self.inner.key_metadata)
+    fn select_asymmetric_signer(&self) -> Self::AsymmetricSigner {
+        self.clone()
     }
 
-    async fn sign_asymmetric_unchecked(&self, input: &[u8]) -> Result<Vec<u8>, Self::Error> {
+    fn select_asymmetric_signer_by_thumbprint(
+        &self,
+        thumbprint: &str,
+    ) -> Option<Self::AsymmetricSigner> {
+        if self.inner.thumbprint == thumbprint {
+            Some(self.clone())
+        } else {
+            None
+        }
+    }
+}
+
+impl AsymmetricJwsSigner for PrivateKey {
+    fn public_key_jwk(&self) -> Cow<'_, jwk::PublicJwk> {
+        Cow::Borrowed(&self.inner.jwk)
+    }
+}
+
+impl JwsSigner for PrivateKey {
+    type Error = Infallible;
+
+    fn jws_algorithm(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.inner.signing_key.jws_algorithm())
+    }
+
+    fn key_id(&self) -> Option<Cow<'_, str>> {
+        self.inner.kid.as_deref().map(Cow::Borrowed)
+    }
+
+    async fn sign(&self, input: &[u8]) -> Result<Vec<u8>, Self::Error> {
         match &self.inner.signing_key {
             Key::Es256(signing_key) => {
                 let signature: p256::ecdsa::Signature = signing_key.sign(input);

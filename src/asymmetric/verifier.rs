@@ -310,8 +310,10 @@ mod tests {
             signer::{AsymmetricJwsSigner, AsymmetricJwsSignerSelector},
             verifier::BoxedJwsVerifier,
         },
-        jwt::Jwt,
-        token::validator::{ClaimCheck, JwtValidator},
+        jwt::{
+            Jwt,
+            validator::{ClaimCheck, JwtValidator},
+        },
     };
     use serde::{Deserialize, Serialize};
 

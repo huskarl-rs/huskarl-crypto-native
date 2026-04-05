@@ -3,7 +3,10 @@
 use std::sync::Arc;
 
 use huskarl_core::{
-    crypto::verifier::{JwsVerifier, KeyMatch, KeyMatchStrength, VerifyError},
+    crypto::{
+        KeyMatchStrength,
+        verifier::{JwsVerifier, KeyMatch, VerifyError},
+    },
     jwk::{self, KeyOperation, KeyUse},
 };
 use rsa::{BoxedUint, RsaPublicKey, signature::Verifier};

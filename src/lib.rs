@@ -25,6 +25,7 @@
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+pub mod aead;
 mod factory;
 
 pub mod asymmetric;

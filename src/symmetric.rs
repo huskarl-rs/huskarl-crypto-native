@@ -7,12 +7,13 @@ use secrecy::{ExposeSecret, SecretBox};
 
 use huskarl_core::{
     crypto::{
+        KeyMatchStrength,
         signer::{JwsSigner, JwsSignerSelector},
-        verifier::{JwsVerifier, KeyMatch, KeyMatchStrength, VerifyError},
+        verifier::{JwsVerifier, KeyMatch, VerifyError},
     },
     secrets::Secret,
 };
-use sha2::{Digest, digest::common::KeySizeUser as _};
+use sha2::digest::common::KeySizeUser as _;
 use snafu::{ResultExt, Snafu, ensure};
 use subtle::ConstantTimeEq as _;
 
@@ -83,7 +84,7 @@ impl SymmetricKey {
     ) -> Result<Self, KeyLoadError<S::Error>> {
         let secret_output = secret.get_secret_value().await.context(SecretSnafu)?;
         let key_id = key_id_from_secret_identity(secret_output.identity.as_deref());
-        let mut key = secret_output.value;
+        let key = secret_output.value;
 
         let required_key_size = match algorithm {
             SymmetricAlgorithm::Hs256 => Hmac::<sha2::Sha256>::key_size(),
@@ -91,30 +92,9 @@ impl SymmetricKey {
             SymmetricAlgorithm::Hs512 => Hmac::<sha2::Sha512>::key_size(),
         };
 
-        // Per RFC 2104: keys longer than the hash output size are first hashed
-        // using the same hash function to derive the actual HMAC key.
-        if key.expose_secret().len() > required_key_size {
-            key = match algorithm {
-                SymmetricAlgorithm::Hs256 => SecretBox::new(
-                    sha2::Sha256::digest(key.expose_secret())
-                        .to_vec()
-                        .into_boxed_slice(),
-                ),
-                SymmetricAlgorithm::Hs384 => SecretBox::new(
-                    sha2::Sha384::digest(key.expose_secret())
-                        .to_vec()
-                        .into_boxed_slice(),
-                ),
-                SymmetricAlgorithm::Hs512 => SecretBox::new(
-                    sha2::Sha512::digest(key.expose_secret())
-                        .to_vec()
-                        .into_boxed_slice(),
-                ),
-            }
-        }
-
+        // RFC 7518 Section 3.2: A key of the same size as the hash output (or larger) MUST be used.
         ensure!(
-            key.expose_secret().len() == required_key_size,
+            key.expose_secret().len() >= required_key_size,
             InvalidKeySizeSnafu {
                 required: required_key_size,
                 actual: key.expose_secret().len()

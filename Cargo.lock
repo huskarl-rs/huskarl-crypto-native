@@ -542,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "huskarl-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "base64",
@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "huskarl-crypto-native"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek",

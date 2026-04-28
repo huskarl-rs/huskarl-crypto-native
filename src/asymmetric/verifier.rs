@@ -334,7 +334,7 @@ mod tests {
             .issuer("https://as.example.com")
             .audience("my-api")
             .issued_now_expires_after(std::time::Duration::from_secs(300))
-            .extra_claims(MyClaims {
+            .claims(MyClaims {
                 earnest_id: "abc123".to_string(),
             })
             .build();

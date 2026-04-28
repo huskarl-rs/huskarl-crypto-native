@@ -542,7 +542,9 @@ dependencies = [
 
 [[package]]
 name = "huskarl-core"
-version = "0.3.0"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "598343c103d47ba02270f3e9714ebdf034eee8991cf368d55fd737b62b3a48ae"
 dependencies = [
  "arc-swap",
  "base64",
@@ -566,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "huskarl-crypto-native"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek",

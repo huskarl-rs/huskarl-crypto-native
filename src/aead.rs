@@ -11,11 +11,7 @@ use huskarl_core::{
     },
     secrets::{Secret, SecretBytes},
 };
-use sha2::digest::{
-    array::Array,
-    consts::{U12, U16},
-    typenum::Unsigned,
-};
+use sha2::digest::array::Array;
 use snafu::prelude::*;
 
 /// The type of key to generate.
@@ -152,17 +148,11 @@ impl AeadEncryptor for AesGcmKey {
 impl AeadDecryptor for AesGcmKey {
     type Error = AesGcmError;
 
-    fn nonce_length(&self) -> usize {
-        U12::to_usize()
-    }
-
-    fn tag_length(&self) -> usize {
-        U16::to_usize()
-    }
-
     fn cipher_match(&self, m: &CipherMatch<'_>) -> Option<KeyMatchStrength> {
-        if m.enc != self.inner.enc_algorithm() {
-            return None;
+        if let Some(enc) = m.enc {
+            if enc != self.inner.enc_algorithm() {
+                return None;
+            }
         }
 
         match (m.kid, self.kid.as_deref()) {
@@ -179,6 +169,7 @@ impl AeadDecryptor for AesGcmKey {
 
     async fn decrypt(
         &self,
+        _cipher_match: Option<&CipherMatch<'_>>,
         nonce: &[u8],
         ciphertext: &[u8],
         tag: &[u8],

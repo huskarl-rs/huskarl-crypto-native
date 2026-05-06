@@ -10,18 +10,18 @@ categories = ["authentication"]
 readme = "README.md"
 
 [dependencies]
-huskarl-core = { version = "0.4.0", default-features = false }
+huskarl-core = { version = "0.5", default-features = false }
 
-ed25519-dalek = { version = "=3.0.0-pre.6", default-features = false, features = ["pem", "zeroize"] }
+ed25519-dalek = { version = "=3.0.0-pre.7", default-features = false, features = ["pem", "zeroize"] }
 hmac = { version = "0.13", default-features = true }
-pkcs8 = { version = "=0.11.0-rc.11", default-features = false }
+pkcs8 = { version = "0.11", default-features = false }
 p256 = { version = "=0.14.0-rc.9", default-features = false, features = ["ecdsa", "pem", "std"] }
 p384 = { version = "=0.14.0-rc.9", default-features = false, features = ["ecdsa", "pem"] }
 rand = { version = "0.10", default-features = false, features = ["std", "sys_rng", "thread_rng"] }
-rsa = { version = "=0.10.0-rc.17", default-features = false, features = ["encoding", "sha2"] }
+rsa = { version = "=0.10.0-rc.18", default-features = false, features = ["encoding", "sha2"] }
 secrecy = { version = "0.10", default-features = false }
 sha2 = { version = "0.11", default-features = false }
-signature = { version = "=3.0.0-rc.10", default-features = false }
+signature = { version = "3.0", default-features = false }
 snafu = { version = "0.9", default-features = false, features = ["rust_1_81", "std"] }
 subtle = { version = "2.6.1", default-features = false }
 aes-gcm = { version = "=0.11.0-rc.3", default-features = false, features = ["aes", "alloc", "rand_core", "zeroize"] }

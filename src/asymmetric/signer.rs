@@ -403,7 +403,7 @@ impl PrivateKey {
                     signing_key,
                     jwk,
                     thumbprint,
-                    kid: key_id.map(|s| s.to_string()),
+                    kid: key_id.map(std::string::ToString::to_string),
                 }),
             })
         }
@@ -482,7 +482,7 @@ impl PrivateKey {
                     signing_key,
                     jwk,
                     thumbprint,
-                    kid: key_id.map(|s| s.to_string()),
+                    kid: key_id.map(std::string::ToString::to_string),
                 }),
             })
         }

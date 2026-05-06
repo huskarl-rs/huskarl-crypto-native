@@ -23,8 +23,8 @@ pub enum AesGcmKeyType {
 }
 
 enum NativeKey {
-    Aes128(aes_gcm::Aes128Gcm),
-    Aes256(aes_gcm::Aes256Gcm),
+    Aes128(Box<aes_gcm::Aes128Gcm>),
+    Aes256(Box<aes_gcm::Aes256Gcm>),
 }
 
 impl NativeKey {
@@ -56,6 +56,10 @@ pub enum LoadKeyError<Sec: huskarl_core::Error> {
 
 impl AesGcmKey {
     /// Load a key from a secret.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the key could not be loaded from the secret.
     pub async fn from_secret<S: Secret<Output = SecretBytes>>(
         key_type: AesGcmKeyType,
         secret: S,
@@ -64,14 +68,14 @@ impl AesGcmKey {
         let key_source = secret.get_secret_value().await.context(SecretSnafu)?;
 
         let inner = match key_type {
-            AesGcmKeyType::Aes128 => NativeKey::Aes128(
+            AesGcmKeyType::Aes128 => NativeKey::Aes128(Box::new(
                 aes_gcm::Aes128Gcm::new_from_slice(key_source.value.expose_secret())
                     .map_err(|_| InvalidKeyLengthSnafu.build())?,
-            ),
-            AesGcmKeyType::Aes256 => NativeKey::Aes256(
+            )),
+            AesGcmKeyType::Aes256 => NativeKey::Aes256(Box::new(
                 aes_gcm::Aes256Gcm::new_from_slice(key_source.value.expose_secret())
                     .map_err(|_| InvalidKeyLengthSnafu.build())?,
-            ),
+            )),
         };
 
         Ok(AesGcmKey {
@@ -149,10 +153,10 @@ impl AeadDecryptor for AesGcmKey {
     type Error = AesGcmError;
 
     fn cipher_match(&self, m: &CipherMatch<'_>) -> Option<KeyMatchStrength> {
-        if let Some(enc) = m.enc {
-            if enc != self.inner.enc_algorithm() {
-                return None;
-            }
+        if let Some(enc) = m.enc
+            && enc != self.inner.enc_algorithm()
+        {
+            return None;
         }
 
         match (m.kid, self.kid.as_deref()) {

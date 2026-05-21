@@ -10,7 +10,9 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use huskarl_core::crypto::signer::{AsymmetricJwsSigner, AsymmetricJwsSignerSelector, JwsSigner};
+use huskarl_core::crypto::signer::{
+    AsymmetricJwsSigner, AsymmetricJwsSignerSelector, JwsSigner, JwsSignerSelector,
+};
 use huskarl_core::jwk;
 use huskarl_core::secrets::Secret;
 
@@ -27,6 +29,45 @@ pub enum KeyLoadError<E: huskarl_core::Error> {
     KeyDecode {
         /// The underlying error.
         source: pkcs8::Error,
+    },
+}
+
+/// Errors that may occur when constructing a key from JWK material.
+#[derive(Debug, Snafu)]
+pub enum JwkError {
+    /// The algorithm is unsupported or missing.
+    #[snafu(display("Unsupported JWK algorithm: {algorithm:?}"))]
+    UnsupportedAlgorithm {
+        /// The algorithm field from the JWK, if present.
+        algorithm: Option<String>,
+    },
+    /// The key material is invalid.
+    #[snafu(display("Invalid key material"))]
+    InvalidKeyMaterial,
+    /// The key type does not match the algorithm.
+    #[snafu(display("Key type does not match algorithm"))]
+    KeyTypeMismatch,
+}
+
+/// Errors that may occur when loading a private key from a JWK secret.
+#[derive(Debug, Snafu)]
+#[snafu(module)]
+pub enum JwkLoadError<E: huskarl_core::Error> {
+    /// Failed to access secret information.
+    Secret {
+        /// The underlying error.
+        source: E,
+    },
+    /// Failed to parse the JWK JSON.
+    #[snafu(display("Failed to parse JWK JSON"))]
+    JsonParse {
+        /// The underlying error.
+        source: serde_json::Error,
+    },
+    /// JWK processing error.
+    Jwk {
+        /// The underlying error.
+        source: JwkError,
     },
 }
 
@@ -151,6 +192,177 @@ impl Key {
                 .build(),
         }
     }
+
+    /// Returns the full private key in JWK format, including private key material.
+    ///
+    /// The returned value includes the `d` component (and `dp`, `dq`, `p`, `q`, `qi` for RSA)
+    /// and must be treated as sensitive.
+    pub fn as_private_jwk(&self, kid: Option<&str>) -> jwk::PrivateJwk {
+        use p256::elliptic_curve::PrimeField as _;
+
+        match self {
+            Key::Es256(signing_key) => {
+                let jwk::PublicKey::Ec(public) = self.as_public_jwk(kid).key else {
+                    unreachable!()
+                };
+                let d = signing_key.as_nonzero_scalar().to_repr().as_slice().to_vec();
+                build_private_jwk(
+                    jwk::EcKey::builder()
+                        .public(public)
+                        .d(d)
+                        .build()
+                        .private_key()
+                        .expect("d is set"),
+                    self.jws_algorithm(),
+                    kid,
+                )
+            }
+            Key::Es384(signing_key) => {
+                let jwk::PublicKey::Ec(public) = self.as_public_jwk(kid).key else {
+                    unreachable!()
+                };
+                let d = signing_key.as_nonzero_scalar().to_repr().as_slice().to_vec();
+                build_private_jwk(
+                    jwk::EcKey::builder()
+                        .public(public)
+                        .d(d)
+                        .build()
+                        .private_key()
+                        .expect("d is set"),
+                    self.jws_algorithm(),
+                    kid,
+                )
+            }
+            Key::Rs256(k) => convert_rsa_to_private_jwk(k, kid, self.jws_algorithm()),
+            Key::Rs384(k) => convert_rsa_to_private_jwk(k, kid, self.jws_algorithm()),
+            Key::Rs512(k) => convert_rsa_to_private_jwk(k, kid, self.jws_algorithm()),
+            Key::Ps256(k) => convert_rsa_to_private_jwk(k, kid, self.jws_algorithm()),
+            Key::Ps384(k) => convert_rsa_to_private_jwk(k, kid, self.jws_algorithm()),
+            Key::Ps512(k) => convert_rsa_to_private_jwk(k, kid, self.jws_algorithm()),
+            Key::Ed25519 { key, .. } => {
+                let jwk::PublicKey::Okp(public) = self.as_public_jwk(kid).key else {
+                    unreachable!()
+                };
+                let d = key.as_bytes().to_vec();
+                build_private_jwk(
+                    jwk::OkpKey::builder()
+                        .public(public)
+                        .d(d)
+                        .build()
+                        .private_key()
+                        .expect("d is set"),
+                    self.jws_algorithm(),
+                    kid,
+                )
+            }
+        }
+    }
+
+    fn from_jwk(key: jwk::PrivateKey, alg: &str) -> Result<Self, JwkError> {
+        match key {
+            jwk::PrivateKey::Ec(ec) => match (ec.public.crv.as_str(), alg) {
+                ("P-256", "ES256") => p256::ecdsa::SigningKey::from_slice(&ec.d)
+                    .map(Key::Es256)
+                    .map_err(|_| InvalidKeyMaterialSnafu.build()),
+                ("P-384", "ES384") => p384::ecdsa::SigningKey::from_slice(&ec.d)
+                    .map(Key::Es384)
+                    .map_err(|_| InvalidKeyMaterialSnafu.build()),
+                _ => KeyTypeMismatchSnafu.fail(),
+            },
+            jwk::PrivateKey::Rsa(rsa_private) => {
+                let n =
+                    rsa::BoxedUint::from_be_slice_vartime(&rsa_private.public.n);
+                let e =
+                    rsa::BoxedUint::from_be_slice_vartime(&rsa_private.public.e);
+                let d = rsa::BoxedUint::from_be_slice_vartime(&rsa_private.d);
+                let mut primes = Vec::new();
+                if let Some(ref p) = rsa_private.p {
+                    primes.push(rsa::BoxedUint::from_be_slice_vartime(p));
+                }
+                if let Some(ref q) = rsa_private.q {
+                    primes.push(rsa::BoxedUint::from_be_slice_vartime(q));
+                }
+                let rsa_key = rsa::RsaPrivateKey::from_components(n, e, d, primes)
+                    .map_err(|_| InvalidKeyMaterialSnafu.build())?;
+                match alg {
+                    "RS256" => Ok(Key::Rs256(rsa::pkcs1v15::SigningKey::new(rsa_key))),
+                    "RS384" => Ok(Key::Rs384(rsa::pkcs1v15::SigningKey::new(rsa_key))),
+                    "RS512" => Ok(Key::Rs512(rsa::pkcs1v15::SigningKey::new(rsa_key))),
+                    "PS256" => Ok(Key::Ps256(rsa::pss::SigningKey::new(rsa_key))),
+                    "PS384" => Ok(Key::Ps384(rsa::pss::SigningKey::new(rsa_key))),
+                    "PS512" => Ok(Key::Ps512(rsa::pss::SigningKey::new(rsa_key))),
+                    _ => KeyTypeMismatchSnafu.fail(),
+                }
+            }
+            jwk::PrivateKey::Okp(okp) => match (okp.public.crv.as_str(), alg) {
+                ("Ed25519", "EdDSA") => {
+                    let bytes: [u8; 32] = okp
+                        .d
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| InvalidKeyMaterialSnafu.build())?;
+                    Ok(Key::Ed25519 {
+                        key: ed25519_dalek::SigningKey::from_bytes(&bytes),
+                        use_fully_specified_jws_algorithm: false,
+                    })
+                }
+                ("Ed25519", "Ed25519") => {
+                    let bytes: [u8; 32] = okp
+                        .d
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| InvalidKeyMaterialSnafu.build())?;
+                    Ok(Key::Ed25519 {
+                        key: ed25519_dalek::SigningKey::from_bytes(&bytes),
+                        use_fully_specified_jws_algorithm: true,
+                    })
+                }
+                _ => KeyTypeMismatchSnafu.fail(),
+            },
+            _ => KeyTypeMismatchSnafu.fail(),
+        }
+    }
+}
+
+fn build_private_jwk(
+    key: impl Into<jwk::PrivateKey>,
+    alg: &str,
+    kid: Option<&str>,
+) -> jwk::PrivateJwk {
+    jwk::PrivateJwk::builder()
+        .key(key)
+        .key_use(jwk::KeyUse::Sign)
+        .algorithm(alg)
+        .maybe_kid(kid.map(String::from))
+        .build()
+}
+
+fn convert_rsa_to_private_jwk(
+    private_key: impl AsRef<rsa::RsaPrivateKey>,
+    kid: Option<&str>,
+    alg: &str,
+) -> jwk::PrivateJwk {
+    use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
+    let key = private_key.as_ref();
+    let public_key = key.to_public_key();
+    let primes = key.primes();
+
+    let rsa_key = jwk::RsaKey::builder()
+        .public(
+            jwk::RsaPublicKey::builder()
+                .e(public_key.e().to_be_bytes())
+                .n(public_key.n().to_be_bytes())
+                .build(),
+        )
+        .d(key.d().to_be_bytes())
+        .maybe_p(primes.first().map(rsa::BoxedUint::to_be_bytes))
+        .maybe_q(primes.get(1).map(rsa::BoxedUint::to_be_bytes))
+        .maybe_dp(key.dp().map(rsa::BoxedUint::to_be_bytes))
+        .maybe_dq(key.dq().map(rsa::BoxedUint::to_be_bytes))
+        .maybe_qi(key.qinv().map(|qi| qi.retrieve().to_be_bytes()))
+        .build();
+
+    build_private_jwk(rsa_key.private_key().expect("d is set"), alg, kid)
 }
 
 fn convert_rsa_public_key_to_jwk(
@@ -301,7 +513,7 @@ impl PrivateKey {
     /// Generates an asymmetric key in memory.
     #[must_use]
     #[allow(clippy::missing_panics_doc)]
-    pub fn generate(key_type: GenerateAlgorithm) -> Self {
+    pub fn generate(key_type: GenerateAlgorithm, kid: Option<String>) -> Self {
         let signing_key = match key_type {
             GenerateAlgorithm::Es256 => {
                 use p256::elliptic_curve::Generate as _;
@@ -359,17 +571,15 @@ impl PrivateKey {
             }
         };
 
-        let jwk = signing_key.as_public_jwk(None);
-        let thumbprint = jwk
-            .thumbprint()
-            .expect("Thumbprint must exist for a supported key type");
+        let jwk = signing_key.as_public_jwk(kid.as_deref());
+        let thumbprint = jwk.thumbprint();
 
         Self {
             inner: Arc::new(PrivateKeyInner {
                 signing_key,
                 jwk,
                 thumbprint,
-                kid: None,
+                kid,
             }),
         }
     }
@@ -394,9 +604,7 @@ impl PrivateKey {
         ) -> Result<PrivateKey, pkcs8::Error> {
             let signing_key = f()?;
             let jwk = signing_key.as_public_jwk(key_id);
-            let thumbprint = jwk
-                .thumbprint()
-                .expect("Thumbprint must exist for a supported key type");
+            let thumbprint = jwk.thumbprint();
 
             Ok(PrivateKey {
                 inner: Arc::new(PrivateKeyInner {
@@ -473,9 +681,7 @@ impl PrivateKey {
         ) -> Result<PrivateKey, pkcs8::Error> {
             let signing_key = f()?;
             let jwk = signing_key.as_public_jwk(key_id);
-            let thumbprint = jwk
-                .thumbprint()
-                .expect("Thumbprint must exist for a supported key type");
+            let thumbprint = jwk.thumbprint();
 
             Ok(PrivateKey {
                 inner: Arc::new(PrivateKeyInner {
@@ -531,19 +737,82 @@ impl PrivateKey {
         }
         .context(KeyDecodeSnafu)
     }
+
+    /// Returns the full private key in JWK format, including private key material (`d`).
+    ///
+    /// The returned value is sensitive and must be handled accordingly.
+    #[must_use]
+    pub fn as_private_jwk(&self, kid: Option<&str>) -> jwk::PrivateJwk {
+        self.inner.signing_key.as_private_jwk(kid)
+    }
+
+    /// Constructs a private key from a [`jwk::PrivateJwk`].
+    ///
+    /// The JWK must have an `alg` field identifying the signing algorithm.
+    /// The `kid` field, if present, is used as the key ID.
+    ///
+    /// # Errors
+    ///
+    /// The JWK is missing an algorithm, has an unsupported algorithm,
+    /// or contains invalid key material.
+    pub fn from_jwk(private_jwk: jwk::PrivateJwk) -> Result<Self, JwkError> {
+        let alg = private_jwk
+            .algorithm
+            .as_deref()
+            .ok_or_else(|| UnsupportedAlgorithmSnafu { algorithm: None::<String> }.build())?;
+        let kid = private_jwk.kid;
+        let signing_key = Key::from_jwk(private_jwk.key, alg)?;
+        let jwk = signing_key.as_public_jwk(kid.as_deref());
+        let thumbprint = jwk.thumbprint();
+
+        Ok(Self {
+            inner: Arc::new(PrivateKeyInner {
+                signing_key,
+                jwk,
+                thumbprint,
+                kid,
+            }),
+        })
+    }
+
+    /// Loads a private key from a JWK JSON secret.
+    ///
+    /// The secret value must be a JSON string representing a JWK with private
+    /// key material (the `d` field). The JWK's `alg` and `kid` fields are used
+    /// directly.
+    ///
+    /// # Errors
+    ///
+    /// The secret could not be accessed, the JSON is invalid,
+    /// or the JWK is not a valid private key.
+    pub async fn load_jwk<S: Secret<Output = SecretString>>(
+        secret: S,
+    ) -> Result<Self, JwkLoadError<S::Error>> {
+        let secret_output = secret
+            .get_secret_value()
+            .await
+            .context(jwk_load_error::SecretSnafu)?;
+        let json = secret_output.value.expose_secret();
+        let parsed: jwk::Jwk =
+            serde_json::from_str(json).context(jwk_load_error::JsonParseSnafu)?;
+        let private_jwk = parsed
+            .private_jwk()
+            .ok_or(InvalidKeyMaterialSnafu.build())
+            .context(jwk_load_error::JwkSnafu)?;
+        Self::from_jwk(private_jwk).context(jwk_load_error::JwkSnafu)
+    }
+}
+
+impl JwsSignerSelector for PrivateKey {
+    type Signer = Self;
+
+    fn select_signer(&self) -> Self {
+        self.clone()
+    }
 }
 
 impl AsymmetricJwsSignerSelector for PrivateKey {
-    type AsymmetricSigner = Self;
-
-    fn select_asymmetric_signer(&self) -> Self::AsymmetricSigner {
-        self.clone()
-    }
-
-    fn select_asymmetric_signer_by_thumbprint(
-        &self,
-        thumbprint: &str,
-    ) -> Option<Self::AsymmetricSigner> {
+    fn select_signer_by_thumbprint(&self, thumbprint: &str) -> Option<Self> {
         if self.inner.thumbprint == thumbprint {
             Some(self.clone())
         } else {
@@ -596,5 +865,30 @@ impl JwsSigner for PrivateKey {
             }
             Key::Ed25519 { key, .. } => Ok(key.sign(input).to_vec()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_jwk_missing_algorithm() {
+        let key = PrivateKey::generate(GenerateAlgorithm::Es256, None);
+        let mut private_jwk = key.as_private_jwk(None);
+        private_jwk.algorithm = None;
+
+        let err = PrivateKey::from_jwk(private_jwk).unwrap_err();
+        assert!(matches!(err, JwkError::UnsupportedAlgorithm { .. }));
+    }
+
+    #[test]
+    fn from_jwk_key_type_mismatch() {
+        let key = PrivateKey::generate(GenerateAlgorithm::Es256, None);
+        let mut private_jwk = key.as_private_jwk(None);
+        private_jwk.algorithm = Some("RS256".to_string());
+
+        let err = PrivateKey::from_jwk(private_jwk).unwrap_err();
+        assert!(matches!(err, JwkError::KeyTypeMismatch));
     }
 }

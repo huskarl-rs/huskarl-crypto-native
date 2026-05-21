@@ -134,10 +134,7 @@ impl Key {
                 .ok()
                 .map(Self::Ed25519)
             }
-            jwk::PublicKey::Rsa(_)
-            | jwk::PublicKey::Ec(_)
-            | jwk::PublicKey::Okp(_)
-            | jwk::PublicKey::UnknownOrPrivate => None,
+            _ => None,
         }
     }
 }
@@ -305,20 +302,63 @@ fn require_alg(requested: &str, supported: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::asymmetric::{
-        signer::{GenerateAlgorithm, PrivateKey},
+        signer::{AsymmetricAlgorithm, GenerateAlgorithm, PrivateKey},
         verifier::AsymmetricPublicKey,
     };
+    use huskarl_core::crypto::signer::{JwsSigner, JwsSignerSelector};
     use huskarl_core::{
-        crypto::{
-            signer::{AsymmetricJwsSigner, AsymmetricJwsSignerSelector},
-            verifier::BoxedJwsVerifier,
-        },
+        crypto::{signer::AsymmetricJwsSigner, verifier::BoxedJwsVerifier},
         jwt::{
             Jwt,
             validator::{ClaimCheck, JwtValidator},
         },
     };
     use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Serialize, Deserialize)]
+    struct Claims {
+        sub: String,
+    }
+
+    #[derive(Clone)]
+    struct StringSecret {
+        value: String,
+        identity: Option<String>,
+    }
+
+    impl huskarl_core::secrets::Secret for StringSecret {
+        type Error = std::convert::Infallible;
+        type Output = secrecy::SecretString;
+
+        async fn get_secret_value(
+            &self,
+        ) -> Result<huskarl_core::secrets::SecretOutput<Self::Output>, Self::Error> {
+            Ok(huskarl_core::secrets::SecretOutput {
+                value: self.value.clone().into(),
+                identity: self.identity.clone(),
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct ByteSecret {
+        bytes: Vec<u8>,
+        identity: Option<String>,
+    }
+
+    impl huskarl_core::secrets::Secret for ByteSecret {
+        type Error = std::convert::Infallible;
+        type Output = secrecy::SecretBox<[u8]>;
+
+        async fn get_secret_value(
+            &self,
+        ) -> Result<huskarl_core::secrets::SecretOutput<Self::Output>, Self::Error> {
+            Ok(huskarl_core::secrets::SecretOutput {
+                value: secrecy::SecretBox::new(Box::from(self.bytes.as_slice())),
+                identity: self.identity.clone(),
+            })
+        }
+    }
 
     #[tokio::test]
     async fn verify_access_token() {
@@ -327,8 +367,8 @@ mod tests {
             earnest_id: String,
         }
 
-        let signing_key = PrivateKey::generate(GenerateAlgorithm::EdDsa);
-        let selected_key = signing_key.select_asymmetric_signer();
+        let signing_key = PrivateKey::generate(GenerateAlgorithm::EdDsa, None);
+        let selected_key = signing_key.select_signer();
 
         let jwt = Jwt::builder()
             .issuer("https://as.example.com")
@@ -356,5 +396,395 @@ mod tests {
         assert_eq!(validated.issuer.as_deref(), Some("https://as.example.com"));
         assert_eq!(validated.audience, ["my-api"]);
         assert!(validated.expiration.is_some());
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_es256() {
+        roundtrip_jwk(GenerateAlgorithm::Es256).await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_rs256() {
+        roundtrip_jwk(GenerateAlgorithm::Rs256 {
+            modulus_length: 2048,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_ps256() {
+        roundtrip_jwk(GenerateAlgorithm::Ps256 {
+            modulus_length: 2048,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_eddsa() {
+        roundtrip_jwk(GenerateAlgorithm::EdDsa).await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_ed25519() {
+        roundtrip_jwk(GenerateAlgorithm::Ed25519).await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_es384() {
+        roundtrip_jwk(GenerateAlgorithm::Es384).await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_rs384() {
+        roundtrip_jwk(GenerateAlgorithm::Rs384 {
+            modulus_length: 2048,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_rs512() {
+        roundtrip_jwk(GenerateAlgorithm::Rs512 {
+            modulus_length: 2048,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_ps384() {
+        roundtrip_jwk(GenerateAlgorithm::Ps384 {
+            modulus_length: 2048,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_jwk_ps512() {
+        roundtrip_jwk(GenerateAlgorithm::Ps512 {
+            modulus_length: 2048,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_load_jwk_es256() {
+        roundtrip_load_jwk(GenerateAlgorithm::Es256).await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_load_jwk_rs256() {
+        roundtrip_load_jwk(GenerateAlgorithm::Rs256 {
+            modulus_length: 2048,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_load_jwk_eddsa() {
+        roundtrip_load_jwk(GenerateAlgorithm::EdDsa).await;
+    }
+
+    async fn roundtrip_load_jwk(algorithm: GenerateAlgorithm) {
+        let kid = "load-jwk-key".to_string();
+        let original = PrivateKey::generate(algorithm, Some(kid.clone()));
+        let private_jwk = original.as_private_jwk(Some(&kid));
+
+        // Convert to Jwk (which is Serialize) and serialize to JSON
+        let jwk: huskarl_core::jwk::Jwk = private_jwk.into();
+        let json = serde_json::to_string(&jwk).unwrap();
+        let secret = StringSecret {
+            value: json,
+            identity: None,
+        };
+        let restored = PrivateKey::load_jwk(secret).await.unwrap();
+        let selected = restored.select_signer();
+
+        // Sign with restored key
+        let jwt = Jwt::builder()
+            .issuer("https://test.example.com")
+            .audience("test-aud")
+            .issued_now_expires_after(std::time::Duration::from_mins(1))
+            .claims(Claims {
+                sub: "user-99".to_string(),
+            })
+            .build();
+        let token = jwt.to_jws_compact(&selected).await.unwrap();
+
+        // Verify with the original key's public key
+        let public_key = AsymmetricPublicKey::from_jwk(
+            original.select_signer().public_key_jwk().into_owned(),
+        )
+        .unwrap();
+
+        let validator = JwtValidator::builder()
+            .verifier(BoxedJwsVerifier::new(public_key))
+            .aud(ClaimCheck::required_value("test-aud"))
+            .build();
+
+        let validated = validator
+            .validate::<serde_json::Value>(token.expose_secret())
+            .await
+            .unwrap();
+
+        assert_eq!(validated.issuer.as_deref(), Some("https://test.example.com"));
+    }
+
+    // -- PKCS#8 round-trip tests --
+
+    #[tokio::test]
+    async fn roundtrip_pkcs8_der_es256() {
+        use p256::elliptic_curve::Generate as _;
+        use pkcs8::EncodePrivateKey as _;
+
+        let raw_key = p256::ecdsa::SigningKey::generate();
+        let der = raw_key.to_pkcs8_der().unwrap();
+
+        let secret = ByteSecret {
+            bytes: der.as_bytes().to_vec(),
+            identity: Some("der-es256-key".to_string()),
+        };
+        let loaded = PrivateKey::load_pkcs8_der(secret, AsymmetricAlgorithm::Es256, |id| {
+            id.map(String::from)
+        })
+        .await
+        .unwrap();
+
+        sign_and_verify(&loaded).await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_pkcs8_pem_es256() {
+        use p256::elliptic_curve::Generate as _;
+        use pkcs8::EncodePrivateKey as _;
+
+        let raw_key = p256::ecdsa::SigningKey::generate();
+        let pem = raw_key.to_pkcs8_pem(pkcs8::LineEnding::LF).unwrap();
+
+        let secret = StringSecret {
+            value: pem.as_str().to_string(),
+            identity: Some("pem-es256-key".to_string()),
+        };
+        let loaded = PrivateKey::load_pkcs8_pem(secret, AsymmetricAlgorithm::Es256, |id| {
+            id.map(String::from)
+        })
+        .await
+        .unwrap();
+
+        sign_and_verify(&loaded).await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_pkcs8_der_eddsa() {
+        use pkcs8::EncodePrivateKey as _;
+
+        let raw_key = ed25519_dalek::SigningKey::from_bytes(&{
+            let mut bytes = [0u8; 32];
+            rand::Rng::fill_bytes(&mut rand::rng(), &mut bytes);
+            bytes
+        });
+        let der = raw_key.to_pkcs8_der().unwrap();
+
+        let secret = ByteSecret {
+            bytes: der.as_bytes().to_vec(),
+            identity: None,
+        };
+        let loaded = PrivateKey::load_pkcs8_der(secret, AsymmetricAlgorithm::EdDsa, |_| None)
+            .await
+            .unwrap();
+
+        sign_and_verify(&loaded).await;
+    }
+
+    #[tokio::test]
+    async fn roundtrip_pkcs8_der_rs256() {
+        use pkcs8::EncodePrivateKey as _;
+
+        let rsa_key = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+        let der = rsa_key.to_pkcs8_der().unwrap();
+
+        let secret = ByteSecret {
+            bytes: der.as_bytes().to_vec(),
+            identity: None,
+        };
+        let loaded = PrivateKey::load_pkcs8_der(secret, AsymmetricAlgorithm::Rs256, |_| None)
+            .await
+            .unwrap();
+
+        sign_and_verify(&loaded).await;
+    }
+
+    // -- Cross-construction verification --
+    // Sign with a PKCS#8-loaded key, verify with a JWK-extracted public key,
+    // then round-trip the private key through JWK and confirm identical signatures.
+
+    #[tokio::test]
+    async fn cross_verify_pkcs8_and_jwk() {
+        use p256::elliptic_curve::Generate as _;
+        use pkcs8::EncodePrivateKey as _;
+
+        let raw_key = p256::ecdsa::SigningKey::generate();
+        let der = raw_key.to_pkcs8_der().unwrap();
+
+        // Load via PKCS#8
+        let secret = ByteSecret {
+            bytes: der.as_bytes().to_vec(),
+            identity: Some("cross-key".to_string()),
+        };
+        let pkcs8_key = PrivateKey::load_pkcs8_der(secret, AsymmetricAlgorithm::Es256, |id| {
+            id.map(String::from)
+        })
+        .await
+        .unwrap();
+
+        // Round-trip through JWK
+        let private_jwk = pkcs8_key.as_private_jwk(Some("cross-key"));
+        let jwk_key = PrivateKey::from_jwk(private_jwk).unwrap();
+
+        // Both keys should produce identical signatures (ES256 uses RFC 6979)
+        let data = b"cross-construction test payload";
+        let sig_pkcs8 = pkcs8_key.sign(data).await.unwrap();
+        let sig_jwk = jwk_key.sign(data).await.unwrap();
+        assert_eq!(
+            sig_pkcs8, sig_jwk,
+            "PKCS#8-loaded and JWK-restored keys must produce identical signatures"
+        );
+
+        // Sign with JWK key, verify with PKCS#8 key's public key
+        let jwt = Jwt::builder()
+            .issuer("https://cross.example.com")
+            .audience("cross-aud")
+            .issued_now_expires_after(std::time::Duration::from_mins(1))
+            .claims(Claims {
+                sub: "cross-user".to_string(),
+            })
+            .build();
+        let token = jwt
+            .to_jws_compact(&jwk_key.select_signer())
+            .await
+            .unwrap();
+
+        let public_key = AsymmetricPublicKey::from_jwk(
+            pkcs8_key.select_signer().public_key_jwk().into_owned(),
+        )
+        .unwrap();
+
+        let validator = JwtValidator::builder()
+            .verifier(BoxedJwsVerifier::new(public_key))
+            .aud(ClaimCheck::required_value("cross-aud"))
+            .build();
+
+        validator
+            .validate::<serde_json::Value>(token.expose_secret())
+            .await
+            .unwrap();
+    }
+
+    // -- Deterministic signature tests --
+    // Verify that from_jwk preserves exact key material (not just "some valid key").
+
+    #[tokio::test]
+    async fn deterministic_signature_es256() {
+        deterministic_signature_roundtrip(GenerateAlgorithm::Es256).await;
+    }
+
+    #[tokio::test]
+    async fn deterministic_signature_es384() {
+        deterministic_signature_roundtrip(GenerateAlgorithm::Es384).await;
+    }
+
+    #[tokio::test]
+    async fn deterministic_signature_rs256() {
+        deterministic_signature_roundtrip(GenerateAlgorithm::Rs256 {
+            modulus_length: 2048,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn deterministic_signature_eddsa() {
+        deterministic_signature_roundtrip(GenerateAlgorithm::EdDsa).await;
+    }
+
+    async fn deterministic_signature_roundtrip(algorithm: GenerateAlgorithm) {
+        let original = PrivateKey::generate(algorithm, Some("det-key".to_string()));
+        let private_jwk = original.as_private_jwk(Some("det-key"));
+        let restored = PrivateKey::from_jwk(private_jwk).unwrap();
+
+        let data = b"deterministic signature test payload";
+        let sig_original = original.sign(data).await.unwrap();
+        let sig_restored = restored.sign(data).await.unwrap();
+
+        assert_eq!(
+            sig_original, sig_restored,
+            "original and JWK-restored keys must produce identical signatures"
+        );
+    }
+
+    // -- Helpers --
+
+    async fn sign_and_verify(key: &PrivateKey) {
+        let selected = key.select_signer();
+
+        let jwt = Jwt::builder()
+            .issuer("https://test.example.com")
+            .audience("test-aud")
+            .issued_now_expires_after(std::time::Duration::from_mins(1))
+            .claims(Claims {
+                sub: "user-1".to_string(),
+            })
+            .build();
+        let token = jwt.to_jws_compact(&selected).await.unwrap();
+
+        let public_key =
+            AsymmetricPublicKey::from_jwk(selected.public_key_jwk().into_owned()).unwrap();
+
+        let validator = JwtValidator::builder()
+            .verifier(BoxedJwsVerifier::new(public_key))
+            .aud(ClaimCheck::required_value("test-aud"))
+            .build();
+
+        validator
+            .validate::<serde_json::Value>(token.expose_secret())
+            .await
+            .unwrap();
+    }
+
+    async fn roundtrip_jwk(algorithm: GenerateAlgorithm) {
+        let kid = "test-key-1".to_string();
+        let original = PrivateKey::generate(algorithm, Some(kid.clone()));
+        let private_jwk = original.as_private_jwk(Some(&kid));
+
+        // Round-trip through from_jwk
+        let restored = PrivateKey::from_jwk(private_jwk).unwrap();
+        let selected = restored.select_signer();
+
+        // Sign with restored key
+        let jwt = Jwt::builder()
+            .issuer("https://test.example.com")
+            .audience("test-aud")
+            .issued_now_expires_after(std::time::Duration::from_mins(1))
+            .claims(Claims {
+                sub: "user-42".to_string(),
+            })
+            .build();
+        let token = jwt.to_jws_compact(&selected).await.unwrap();
+
+        // Verify with the original key's public key
+        let public_key = AsymmetricPublicKey::from_jwk(
+            original.select_signer().public_key_jwk().into_owned(),
+        )
+        .unwrap();
+
+        let validator = JwtValidator::builder()
+            .verifier(BoxedJwsVerifier::new(public_key))
+            .aud(ClaimCheck::required_value("test-aud"))
+            .build();
+
+        let validated = validator
+            .validate::<serde_json::Value>(token.expose_secret())
+            .await
+            .unwrap();
+
+        assert_eq!(validated.issuer.as_deref(), Some("https://test.example.com"));
     }
 }

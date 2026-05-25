@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-05-25
+
+### Added
+
+ - Added from_jwk and as_private_jwk methods for JWK-based conversion.
+
+## Changes
+
+ - Bump huskarl-core to 0.6.
+
 ## [0.6.0] - 2026-05-06
 
 ### Changes

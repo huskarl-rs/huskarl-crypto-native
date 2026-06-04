@@ -1,6 +1,6 @@
 [package]
 name = "huskarl-crypto-native"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 description = "Native crypto for huskarl (OAuth2 client) ecosystem."
 repository = "https://github.com/huskarl-rs/huskarl-crypto-native"

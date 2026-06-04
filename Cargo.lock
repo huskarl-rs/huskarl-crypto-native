@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "huskarl-crypto-native"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "aes-gcm",
  "ed25519-dalek",

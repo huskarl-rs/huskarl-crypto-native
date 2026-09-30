@@ -1,3 +1,9 @@
+# Status
+
+Archived; code has been moved into https://github.com/huskarl-rs/huskarl
+
+---
+
 <!-- cargo-reedme: start -->
 
 <!-- cargo-reedme: info-start
